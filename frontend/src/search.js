@@ -1,7 +1,10 @@
 import { useEffect } from "react";
 import { useState } from "react";
+import { useRef } from "react";
 import { useCallback } from "react";
 import * as Sentry from "@sentry/react";
+import * as pdfjs from "pdfjs-dist";
+import pdfjsWorker from "pdfjs-dist/build/pdf.worker.entry.js";
 
 import { getNeighbors } from "./backend";
 import { getNeighborsMetadata } from "./backend";
@@ -12,6 +15,8 @@ import { loading } from "./status";
 import { success } from "./status";
 
 import "./search.css";
+
+pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 const defaultSearch = "e.g. 10.1101/833400";
 
@@ -25,8 +30,9 @@ const Search = ({
   setSimilarPapers,
   setCoordinates,
 }) => {
-  // default query
-  const [query, setQuery] = useState(getUrl() || defaultSearch);
+  const [query, setQuery] = useState(getUrl() || defaultSearch); // doi query
+  const [text, setText] = useState(""); // search by text
+  const uploadRef = useRef(null);
 
   // on type
   const onChange = useCallback(
@@ -34,8 +40,8 @@ const Search = ({
     []
   );
 
-  // search
-  const search = useCallback(
+  // search by doi
+  const searchByDoi = useCallback(
     async (doi, updateUrl = true) => {
       // clean doi
       doi = cleanDoi(doi);
@@ -54,12 +60,8 @@ const Search = ({
 
       // get preprint info and neighbor data
       try {
-        let {
-          preprint,
-          similarJournals,
-          similarPapers,
-          coordinates,
-        } = await getNeighbors(doi);
+        let { preprint, similarJournals, similarPapers, coordinates } =
+          await getNeighbors(doi);
         preprint = cleanPreprint(preprint);
         similarJournals = await getNeighborsMetadata(similarJournals);
         similarPapers = await getNeighborsMetadata(similarPapers);
@@ -90,6 +92,11 @@ const Search = ({
     ]
   );
 
+  // search by text
+  useEffect(() => {
+    console.log(text);
+  }, [text]);
+
   // when user navigates back/forward
   const onNav = useCallback(() => {
     // get new doi
@@ -98,19 +105,49 @@ const Search = ({
     // put doi in search box
     setQuery(doi);
     // run search, without updating url since browser does this automatically
-    search(doi, false);
-  }, [search]);
+    searchByDoi(doi, false);
+  }, [searchByDoi]);
 
   // search for doi in url if any on first load
   useEffect(() => {
-    if (getUrl()) search(getUrl());
-  }, [search]);
+    if (getUrl()) searchByDoi(getUrl());
+  }, [searchByDoi]);
 
   // listen for user back/forward nav
   useEffect(() => {
     window.addEventListener("popstate", onNav);
     return () => window.removeEventListener("popstate", onNav);
-  }, [onNav, search]);
+  }, [onNav, searchByDoi]);
+
+  // on upload
+  const onUpload = async ({ target }) => {
+    // get uploaded file
+    const file = target?.files[0];
+
+    // if pdf
+    if (file.type === "application/pdf") {
+      const buffer = (await file.arrayBuffer()) || [];
+
+      // reset input so you can upload the same file again
+      if (uploadRef.current) uploadRef.current.value = "";
+
+      // get plain text of pdf
+      const pdf = await pdfjs.getDocument(buffer).promise;
+      let text = "";
+      for (let num = 1; num <= pdf.numPages; num++) {
+        const page = await pdf.getPage(num);
+        const content = await page.getTextContent();
+        const items = content.items.map(({ str }) => str).join(" ");
+        text += items + "\n";
+      }
+      setText(text);
+    }
+    // if txt
+    else if (file.type === "text/plain") {
+      const text = await file.text();
+      setText(text);
+    }
+  };
 
   // render
   return (
@@ -127,7 +164,7 @@ const Search = ({
           // prevent page from navigating away/refreshing on submit
           event.preventDefault();
           // run search
-          search(query);
+          searchByDoi(query);
         }}
       >
         <input
@@ -146,6 +183,22 @@ const Search = ({
           disabled={status === loading}
         >
           <i className="fas fa-search"></i>
+        </button>
+        <input
+          ref={uploadRef}
+          type="file"
+          onChange={onUpload}
+          accept=".txt,text/plain,.pdf,application/pdf"
+          style={{ display: "none" }}
+        />
+        <button
+          className="upload_button"
+          onClick={(event) => {
+            event.preventDefault();
+            uploadRef?.current?.click();
+          }}
+        >
+          <i className="fas fa-upload"></i>
         </button>
       </form>
     </section>
